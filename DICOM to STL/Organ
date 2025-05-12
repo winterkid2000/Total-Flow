@@ -68,7 +68,7 @@ def rename_output(output_folder: str, phase: str, organ: str) -> bool:
 def main():
     print("예시: /mnt/shared/CT_DICOM 또는 C:\\Users\\User\\Desktop\\DICOM")
     base_path = input("상위 환자 폴더 경로를 입력하세요: ").strip()
-    base_output_path = input("출력 폴더 경로를 입력하세요 (없으면 자동 생성됨): ").strip()
+    base_output_path = input("출력 폴더 경로를 입력하세요: ").strip()
     phase_input = input("처리할 phase를 입력하세요 (PRE / POST / BOTH): ").strip().upper()
     organ = input("분할할 장기 이름을 입력하세요 (예: pancreas, liver, spleen): ").strip().lower()
 
