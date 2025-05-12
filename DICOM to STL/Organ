@@ -53,10 +53,10 @@ def run_segmentation(dicom_folder: str, output_path: str, organ: str):
         print(str(e))
         return False
 
-def rename_output(output_folder: str, phase: str, organ: str) -> bool:
+def rename_output(output_folder: str, phase: str, organ: str, patient_id: str) -> bool:
     output_file = os.path.join(output_folder, f"{organ}.nii.gz")
     if os.path.exists(output_file):
-        new_name = f"{phase}_{organ}.nii.gz"
+        new_name = f"{patient_id}_{phase}_{organ}.nii.gz"
         target_path = os.path.join(output_folder, new_name)
         os.rename(output_file, target_path)
         print(f"저장 완료: {target_path}")
@@ -103,7 +103,7 @@ def main():
 
                 print(f"\n처리 중: {phase_folder} → {output_folder}")
                 if run_segmentation(phase_folder, output_folder, organ):
-                    if not rename_output(output_folder, phase, organ):
+                    if not rename_output(output_folder, phase, organ, patient_id):
                         failed_cases.append(f"{patient_id}/{phase} (결과 파일 없음)")
                 else:
                     failed_cases.append(f"{patient_id}/{phase} (segmentation 실패)")
