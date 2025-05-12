@@ -30,7 +30,7 @@ def nifti_to_stl(nifti_path: str, stl_path: str, threshold: float = None):
     binary_mask = data > threshold
 
     if not np.any(binary_mask):
-        print(f"STL 변환 실패: {nifti_path}에서 유효한 마스크가 없습니다.")
+        print(f"STL 변환 실패: {nifti_path}에서 유효한 마스크가 없음.")
         return False
 
     verts, faces, _, _ = measure.marching_cubes(binary_mask, level=0)
