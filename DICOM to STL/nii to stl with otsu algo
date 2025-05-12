@@ -1,0 +1,215 @@
+import os
+import subprocess
+import sys
+from tqdm import tqdm
+import nibabel as nib
+import numpy as np
+from skimage import measure
+from skimage.filters import threshold_otsu
+from stl import mesh  # numpy-stl
+
+def validate_dicom_folder(folder_path: str) -> bool:
+    for f in os.listdir(folder_path):
+        if f.lower().endswith('.dcm') or ('.' not in f):
+            return True
+    return False
+
+def nifti_to_stl(nifti_path: str, stl_path: str, threshold: float = None):
+    img = nib.load(nifti_path)
+    data = img.get_fdata()
+    affine = img.affine
+
+    if threshold is None:
+        valid_data = data[data > 0]
+        if valid_data.size == 0:
+            print(f"STL 변환 실패: {nifti_path}에 유효한 데이터 없음.")
+            return False
+        threshold = threshold_otsu(valid_data)
+        print(f"자동 임계값(Otsu): {threshold:.3f}")
+
+    binary_mask = data > threshold
+
+    if not np.any(binary_mask):
+        print(f"STL 변환 실패: {nifti_path}에서 유효한 마스크가 없습니다.")
+        return False
+
+    verts, faces, _, _ = measure.marching_cubes(binary_mask, level=0)
+    verts = nib.affines.apply_affine(affine, verts)
+
+    stl_data = np.zeros(faces.shape[0], dtype=mesh.Mesh.dtype)
+    for i, f in enumerate(faces):
+        for j in range(3):
+            stl_data['vectors'][i][j] = verts[f[j], :]
+
+    m = mesh.Mesh(stl_data)
+    m.save(stl_path)
+    print(f"STL 저장 완료: {stl_path}")
+    return True
+
+def run_pancreas_segmentation(dicom_folder: str, output_path: str, phase: str, patient_id: str) -> bool:
+    try:
+        if not validate_dicom_folder(dicom_folder):
+            print(f"DICOM 파일이 없는 것으로 보입니다: {dicom_folder}")
+            return False
+
+        segmentator_cmd = "TotalSegmentator"
+        output_file = os.path.join(os.path.dirname(dicom_folder), f"{patient_id}_{phase}.nii")
+
+        command = [
+            segmentator_cmd,
+            "-i", dicom_folder,
+            "-o", output_file,
+            "--roi_subset", "pancreas",
+            "--output_type", "nifti"
+        ]
+
+        print(f"\n명령어 실행: {' '.join(command)}")
+        result = subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        print(f"처리 완료: {dicom_folder}")
+
+        out_dir = os.path.join(output_path, "OUT")
+        os.makedirs(out_dir, exist_ok=True)
+        log_file_name = f"{phase}_{patient_id}_log.txt"
+        log_file_path = os.path.join(out_dir, log_file_name)
+        with open(log_file_path, "w", encoding="utf-8") as log_file:
+            log_file.write("=== STDOUT ===\n")
+            log_file.write(result.stdout)
+            log_file.write("\n\n=== STDERR ===\n")
+            log_file.write(result.stderr)
+
+        return True
+
+    except subprocess.CalledProcessError as e:
+        print(f"처리 실패: {dicom_folder}")
+        print("실패한 명령어:", ' '.join(e.cmd))
+        print("STDOUT:\n", e.stdout)
+        print("STDERR:\n", e.stderr)
+        return False
+
+    except Exception as e:
+        print(f"예외 발생: {dicom_folder}")
+        print(str(e))
+        return False
+
+def convert_and_save_stl(original_folder: str, phase: str, patient_id: str, threshold: float = None) -> bool:
+    out_dir = os.path.join(original_folder, "OUT")
+    os.makedirs(out_dir, exist_ok=True)
+    stl_name = f"{phase}_{patient_id}_pancreas.stl"
+    stl_path = os.path.join(out_dir, stl_name)
+
+    patient_id = str(patient_id)
+    base_dir = os.path.dirname(original_folder)
+    all_entries = os.listdir(base_dir)
+
+    patterns = [
+        "pancreas.nii.gz",
+        f"{patient_id}_{phase}.nii",
+        f"{patient_id}_{phase}.nii.gz",
+        f"{phase}.nii",
+        f"{phase}_pancreas_output.nii",
+        f"{phase}_pancreas_output.nii.gz"
+    ]
+
+    for fname in all_entries:
+        for pattern in patterns:
+            if fname.lower() == pattern.lower():
+                nii_path = os.path.join(base_dir, fname)
+                if os.path.isfile(nii_path):
+                    print(f"NIfTI 사용: {nii_path}")
+                    return nifti_to_stl(nii_path, stl_path, threshold=threshold)
+
+    for entry in all_entries:
+        entry_path = os.path.join(base_dir, entry)
+        if entry.lower().endswith(('.nii', '.nii.gz')) and os.path.isdir(entry_path):
+            for f in os.listdir(entry_path):
+                if f.endswith('.nii') or f.endswith('.nii.gz'):
+                    inner_nii_path = os.path.join(entry_path, f)
+                    print(f"폴더 내부 NIfTI 사용: {inner_nii_path}")
+                    return nifti_to_stl(inner_nii_path, stl_path, threshold=threshold)
+
+    print("NIfTI 파일을 찾을 수 없습니다.")
+    return False
+
+def run_single_patient(patient_id: str, base_path: str, threshold: float = None):
+    patient_folder = os.path.join(base_path, patient_id)
+
+    if not os.path.exists(patient_folder):
+        print(f"해당 환자 폴더가 존재하지 않습니다: {patient_folder}")
+        return
+
+    failed_cases = []
+
+    for phase in ['PRE', 'POST']:
+        phase_folder = os.path.join(patient_folder, phase)
+        if os.path.isdir(phase_folder):
+            print(f"\n처리 중: {phase_folder}")
+            if run_pancreas_segmentation(phase_folder, phase_folder, phase, patient_id):
+                if not convert_and_save_stl(phase_folder, phase, patient_id, threshold):
+                    failed_cases.append(f"{patient_id}/{phase} (STL 저장 실패)")
+            else:
+                failed_cases.append(f"{patient_id}/{phase} (segmentation 실패)")
+
+    if failed_cases:
+        print("\n실패한 케이스:")
+        for item in failed_cases:
+            print(" -", item)
+    else:
+        print(f"\n{patient_id} 환자 데이터가 성공적으로 처리되었습니다.")
+
+def main():
+    print("예시: /mnt/shared/CT_DICOM 또는 C:\\Users\\User\\Desktop\\DICOM")
+    base_path = input("상위 환자 폴더 경로를 입력하세요: ").strip()
+    base_path = os.path.normpath(base_path)
+
+    if not os.path.exists(base_path):
+        print(f"해당 경로가 존재하지 않습니다: {base_path}")
+        sys.exit(1)
+
+    try:
+        threshold_input = input("\nSTL 변환에 사용할 Threshold 값을 입력하세요 (없으면 자동 계산됨): ").strip()
+        threshold = float(threshold_input) if threshold_input else None
+    except ValueError:
+        print("잘못된 입력입니다. 자동 계산을 사용합니다.")
+        threshold = None
+
+    mode = input("\n[1] 전체 환자 처리\n[2] 특정 환자 1명만 처리\n원하는 모드를 선택하세요 (1 또는 2): ").strip()
+
+    if mode == "2":
+        patient_id = input("처리할 환자 ID를 입력하세요 (숫자만): ").strip()
+        run_single_patient(patient_id, base_path, threshold)
+        return
+
+    failed_cases = []
+    patient_folders = [d for d in os.listdir(base_path)
+                       if os.path.isdir(os.path.join(base_path, d)) and d.isdigit()]
+
+    for patient_id in tqdm(patient_folders, desc="전체 환자 진행률"):
+        patient_folder = os.path.join(base_path, patient_id)
+
+        for phase in ['PRE', 'POST']:
+            phase_folder = os.path.join(patient_folder, phase)
+
+            if os.path.isdir(phase_folder):
+                print(f"\n처리 중: {phase_folder}")
+                if run_pancreas_segmentation(phase_folder, phase_folder, phase, patient_id):
+                    if not convert_and_save_stl(phase_folder, phase, patient_id, threshold):
+                        failed_cases.append(f"{patient_id}/{phase} (STL 저장 실패)")
+                else:
+                    failed_cases.append(f"{patient_id}/{phase} (segmentation 실패)")
+
+    if failed_cases:
+        print("\n실패한 케이스 목록:")
+        for item in failed_cases:
+            print(" -", item)
+
+        failed_path = os.path.join(base_path, "failed_cases.txt")
+        with open(failed_path, "w", encoding="utf-8") as f:
+            for item in failed_cases:
+                f.write(item + "\n")
+
+        print(f"\n실패한 목록이 저장되었습니다: {failed_path}")
+    else:
+        print("\n모든 케이스가 성공적으로 처리되었습니다.")
+
+if __name__ == "__main__":
+    main()
